@@ -1,0 +1,1 @@
+/Users/a0000/Desktop/escrow-stellar/target/wasm32-unknown-unknown/release/p2p.wasm: /Users/a0000/Desktop/escrow-stellar/contracts/escrow/src/events.rs /Users/a0000/Desktop/escrow-stellar/contracts/escrow/src/lib.rs
