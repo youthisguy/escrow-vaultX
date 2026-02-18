@@ -1,65 +1,634 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useState, useEffect } from "react";
+import { useWallet } from "./contexts/WalletContext";
+import {
+  SorobanRpc,
+  TransactionBuilder,
+  Networks,
+  xdr,
+  Address,
+  scValToNative,
+  Contract,
+  nativeToScVal,
+} from "@stellar/stellar-sdk";
+import { stellar } from "./lib/stellar";
+import {
+  ShieldCheck,
+  Lock,
+  Unlock,
+  RefreshCcw,
+  ArrowRightLeft,
+  Search,
+  PlusCircle,
+  Users,
+  AlertCircle,
+  ExternalLink,
+  History,
+  TrendingUp,
+  TrendingDown,
+} from "lucide-react";
+import { FaWallet } from "react-icons/fa";
+
+const CONTRACT_ID = "CCCG5JBZLW2CGYE62OWHM3VPKO3B6GCKUN2KIXG6T644BOW7PAM6LOKJ";
+const USDC_ASSET = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+const server = new SorobanRpc.Server("https://soroban-testnet.stellar.org:443");
+const networkPassphrase = Networks.TESTNET;
+
+export default function EscrowPage() {
+  const { address: connectedAddress, walletsKit, setAddress } = useWallet();
+
+  const [view, setView] = useState<"search" | "create">("search");
+  const [escrowId, setEscrowId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [txStatus, setTxStatus] = useState<{
+    type: "success" | "error" | "pending";
+    msg: string;
+    hash?: string;
+  } | null>(null);
+
+  const [escrowDetail, setEscrowDetail] = useState<any>(null);
+  const [userCreatedIds, setUserCreatedIds] = useState<bigint[]>([]);
+  const [userReceivedIds, setUserReceivedIds] = useState<bigint[]>([]);
+  const [dashboardTab, setDashboardTab] = useState<"sent" | "received">("sent");
+
+  const [createForm, setCreateForm] = useState({
+    recipient: "",
+    amount: "",
+    deadlineDays: "7",
+  });
+
+  const getStatus = (status: number) => {
+    const map = ["Pending", "Approved", "Completed", "Refunded"];
+    return map[status] || "Unknown";
+  };
+
+  // --- CONTRACT READS ---
+
+  const loadUserDashboard = async () => {
+    if (!connectedAddress) return;
+    try {
+      const contract = new Contract(CONTRACT_ID);
+      const userScVal = new Address(connectedAddress).toScVal();
+
+      const account = await server.getAccount(connectedAddress);
+
+      const fetchIds = async (method: string) => {
+        const tx = new TransactionBuilder(account, {
+          fee: "1000",
+          networkPassphrase,
+        })
+          .addOperation(contract.call(method, userScVal))
+          .setTimeout(30)
+          .build();
+        const sim = await server.simulateTransaction(tx);
+        return SorobanRpc.Api.isSimulationSuccess(sim)
+          ? scValToNative(sim.result!.retval)
+          : [];
+      };
+
+      const [created, received] = await Promise.all([
+        fetchIds("get_created_ids"),
+        fetchIds("get_received_ids"),
+      ]);
+
+      setUserCreatedIds(created);
+      setUserReceivedIds(received);
+    } catch (e) {
+      console.error("Dashboard Load Error:", e);
+    }
+  };
+
+  const fetchEscrow = async (id?: string) => {
+    const targetId = id || escrowId;
+    if (!targetId) return;
+    setLoading(true);
+    try {
+      const contract = new Contract(CONTRACT_ID);
+      const idScVal = nativeToScVal(BigInt(targetId), { type: "u64" });
+
+      const source =
+        connectedAddress ||
+        "GDXK7EYVBXTITLBW2ZCODJW3B7VTVCNNNWDDEHKJ7Y67TZVW5VKRRMU6";
+      const account = await server.getAccount(source);
+      const tx = new TransactionBuilder(account, {
+        fee: "1000",
+        networkPassphrase,
+      })
+        .addOperation(contract.call("get_escrow", idScVal))
+        .setTimeout(30)
+        .build();
+
+      const sim = await server.simulateTransaction(tx);
+      if (SorobanRpc.Api.isSimulationSuccess(sim)) {
+        const data = scValToNative(sim.result!.retval);
+        setEscrowDetail(data);
+        setEscrowId(targetId);
+      } else {
+        setEscrowDetail(null);
+        alert("Escrow not found");
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (connectedAddress) loadUserDashboard();
+  }, [connectedAddress]);
+
+  // --- CONTRACT WRITES ---
+
+  const handleAction = async (
+    method: "approve" | "claim" | "refund" | "create"
+  ) => {
+    if (!connectedAddress || !walletsKit) return;
+    setLoading(true);
+    setTxStatus({ type: "pending", msg: `Broadcasting ${method}...` });
+
+    try {
+      const source = await server.getAccount(connectedAddress);
+      const contract = new Contract(CONTRACT_ID);
+      let ops;
+
+      if (method === "create") {
+        const amountRaw = BigInt(
+          Math.floor(parseFloat(createForm.amount) * 1e7)
+        );
+        const deadline = BigInt(
+          Math.floor(Date.now() / 1000) +
+            parseInt(createForm.deadlineDays) * 86400
+        );
+
+        const recipientsVec = xdr.ScVal.scvVec([
+          xdr.ScVal.scvVec([
+            new Address(createForm.recipient).toScVal(),
+            nativeToScVal(100, { type: "u32" }),
+          ]),
+        ]);
+
+        ops = contract.call(
+          "create",
+          new Address(connectedAddress).toScVal(),
+          recipientsVec,
+          nativeToScVal(amountRaw, { type: "i128" }),
+          new Address(USDC_ASSET).toScVal(),
+          nativeToScVal(deadline, { type: "u64" })
+        );
+      } else {
+        const idScVal = nativeToScVal(BigInt(escrowId), { type: "u64" });
+        ops =
+          method === "claim"
+            ? contract.call(
+                method,
+                idScVal,
+                new Address(connectedAddress).toScVal()
+              )
+            : contract.call(method, idScVal);
+      }
+
+      const tx = new TransactionBuilder(source, {
+        fee: "10000",
+        networkPassphrase,
+      })
+        .addOperation(ops)
+        .setTimeout(30)
+        .build();
+
+      const prepared = await server.prepareTransaction(tx);
+      const { signedTxXdr } = await walletsKit.signTransaction(
+        prepared.toXDR()
+      );
+      const sendResponse = await server.sendTransaction(
+        TransactionBuilder.fromXDR(signedTxXdr, networkPassphrase)
+      );
+
+      setTxStatus({
+        type: "success",
+        msg: "Transaction successful!",
+        hash: sendResponse.hash,
+      });
+
+      // Refresh data
+      setTimeout(() => {
+        loadUserDashboard();
+        if (method !== "create") fetchEscrow();
+      }, 2000);
+    } catch (err: any) {
+      setTxStatus({ type: "error", msg: err.message || "Action failed" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div className="min-h-screen bg-[#050505] text-zinc-200 font-sans p-6 pb-24">
+      <div className="max-w-4xl mx-auto space-y-8">
+        {/* Header */}
+        <header className="flex flex-col md:flex-row justify-between items-center gap-6 pb-8 border-b border-zinc-800">
+          <div>
+            <h1 className="text-3xl font-black tracking-tighter text-white flex items-center gap-2">
+              <ShieldCheck className="text-emerald-500" size={32} />
+              SOROBAN <span className="text-emerald-500">ESCROW</span>
+            </h1>
+            <p className="text-zinc-500 text-sm font-medium">
+              Decentralized Trust-as-a-Service
+            </p>
+          </div>
+
+          <div className="flex gap-2 bg-zinc-900 p-1 rounded-xl border border-zinc-800">
+            <button
+              onClick={() => setView("search")}
+              className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${
+                view === "search"
+                  ? "bg-zinc-800 text-white shadow-xl"
+                  : "text-zinc-500 hover:text-zinc-300"
+              }`}
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+              Dashboard
+            </button>
+            <button
+              onClick={() => setView("create")}
+              className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${
+                view === "create"
+                  ? "bg-zinc-800 text-white shadow-xl"
+                  : "text-zinc-500 hover:text-zinc-300"
+              }`}
             >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+              New Contract
+            </button>
+          </div>
+        </header>
+
+        <main className="grid grid-cols-1 gap-8">
+          {view === "search" ? (
+            <section className="space-y-8 animate-in fade-in slide-in-from-bottom-4">
+              {/* User Dashboard Indices */}
+              {connectedAddress && (
+                <div className="bg-zinc-900/40 border border-zinc-800 rounded-3xl p-6">
+                  <div className="flex items-center justify-between mb-6">
+                    <h3 className="text-sm font-black text-zinc-400 uppercase tracking-widest flex items-center gap-2">
+                      <History size={16} className="text-emerald-500" />
+                      My Escrow Activity
+                    </h3>
+                    <div className="flex gap-1 bg-black p-1 rounded-lg border border-zinc-800">
+                      <button
+                        onClick={() => setDashboardTab("sent")}
+                        className={`px-3 py-1 text-[10px] font-bold rounded ${
+                          dashboardTab === "sent"
+                            ? "bg-zinc-800 text-white"
+                            : "text-zinc-600"
+                        }`}
+                      >
+                        SENT
+                      </button>
+                      <button
+                        onClick={() => setDashboardTab("received")}
+                        className={`px-3 py-1 text-[10px] font-bold rounded ${
+                          dashboardTab === "received"
+                            ? "bg-zinc-800 text-white"
+                            : "text-zinc-600"
+                        }`}
+                      >
+                        RECEIVED
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {(dashboardTab === "sent"
+                      ? userCreatedIds
+                      : userReceivedIds
+                    ).length > 0 ? (
+                      (dashboardTab === "sent"
+                        ? userCreatedIds
+                        : userReceivedIds
+                      ).map((id) => (
+                        <button
+                          key={id.toString()}
+                          onClick={() => fetchEscrow(id.toString())}
+                          className={`px-4 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 ${
+                            escrowId === id.toString()
+                              ? "bg-cyan-500/10 border-cyan-500 text-cyan-400"
+                              : "bg-black border-zinc-800 hover:border-zinc-600 text-zinc-400"
+                          }`}
+                        >
+                          {dashboardTab === "sent" ? (
+                            <TrendingUp size={12} />
+                          ) : (
+                            <TrendingDown size={12} />
+                          )}
+                          ID #{id.toString()}
+                        </button>
+                      ))
+                    ) : (
+                      <p className="text-zinc-600 text-xs italic py-2">
+                        No escrows found in this category.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Search Bar */}
+              <div className="relative group">
+                <Search
+                  className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500 group-focus-within:text-emerald-500 transition-colors"
+                  size={20}
+                />
+                <input
+                  type="number"
+                  placeholder="Search ID"
+                  value={escrowId}
+                  onChange={(e) => setEscrowId(e.target.value)}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl py-5 pl-12 pr-32 text-xl font-bold focus:ring-2 focus:ring-cyan-500/20 outline-none transition-all"
+                />
+                <button
+                  onClick={() => fetchEscrow()}
+                  disabled={!escrowId || loading}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 bg-emerald-500 hover:bg-cyan-400 text-black font-black px-6 py-2 rounded-xl text-sm transition-all disabled:opacity-50"
+                >
+                  {loading ? "FETCHING..." : "LOAD"}
+                </button>
+              </div>
+
+              {escrowDetail ? (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-[2.5rem] overflow-hidden shadow-2xl shadow-black">
+                  <div className="p-8 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
+                    <div>
+                      <span className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-500">
+                        Contract Asset
+                      </span>
+                      <h2 className="text-4xl font-black text-white">
+                        {(Number(escrowDetail.amount) / 1e7).toFixed(2)}{" "}
+                        <span className="text-lg text-zinc-500">USDC</span>
+                      </h2>
+                    </div>
+                    <div className="text-right">
+                      <div
+                        className={`px-4 py-1 rounded-full text-xs font-black uppercase border ${
+                          escrowDetail.status === 1
+                            ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                            : "bg-zinc-800 text-zinc-400 border-zinc-700"
+                        }`}
+                      >
+                        {getStatus(escrowDetail.status)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-8 grid md:grid-cols-2 gap-8">
+                    <div className="space-y-4">
+                      <div className="flex items-start gap-3">
+                        <div className="p-2 bg-zinc-800 rounded-lg">
+                          <TrendingUp size={16} className="text-rose-400" />
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-black text-zinc-500 uppercase">
+                            Sender
+                          </p>
+                          <p className="text-sm font-mono text-zinc-300">
+                            {stellar.formatAddress(escrowDetail.sender)}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-3">
+                        <div className="p-2 bg-zinc-800 rounded-lg">
+                          <TrendingDown
+                            size={16}
+                            className="text-emerald-400"
+                          />
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-black text-zinc-500 uppercase">
+                            Primary Recipient
+                          </p>
+                          <p className="text-sm font-mono text-zinc-300">
+                            {stellar.formatAddress(
+                              escrowDetail.recipients[0][0]
+                            )}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="bg-black/40 rounded-3xl p-6 border border-zinc-800/50 flex flex-col justify-center">
+                      <div className="flex justify-between items-center mb-2">
+                        <p className="text-xs font-bold text-zinc-400">
+                          Lock Mechanism
+                        </p>
+                        {escrowDetail.approved ? (
+                          <Unlock size={14} className="text-emerald-500" />
+                        ) : (
+                          <Lock size={14} className="text-amber-500" />
+                        )}
+                      </div>
+                      <p className="text-xs text-zinc-300 font-bold">
+                        Release Date:
+                      </p>
+                      <p className="text-sm text-zinc-500">
+                        {new Date(
+                          Number(escrowDetail.deadline) * 1000
+                        ).toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="p-8 bg-zinc-950/50 flex flex-wrap gap-4">
+                    {escrowDetail.status === 0 && (
+                      <button
+                        onClick={() => handleAction("approve")}
+                        className="flex-1 bg-white text-black font-black py-4 rounded-xl hover:bg-zinc-200 transition-all flex items-center justify-center gap-2"
+                      >
+                        <ShieldCheck size={20} /> APPROVE RELEASE
+                      </button>
+                    )}
+                    {escrowDetail.status === 1 && (
+                      <button
+                        onClick={() => handleAction("claim")}
+                        className="flex-1 bg-emerald-500 text-black font-black py-4 rounded-xl hover:bg-emerald-400 transition-all"
+                      >
+                        CLAIM FUNDS
+                      </button>
+                    )}
+                    {(escrowDetail.status === 0 ||
+                      escrowDetail.status === 1) && (
+                      <button
+                        onClick={() => handleAction("refund")}
+                        className="px-8 border border-zinc-800 text-zinc-400 font-bold rounded-xl hover:bg-rose-500/10 hover:text-rose-500 hover:border-rose-500/20 transition-all"
+                      >
+                        REFUND
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-20 border-2 border-dashed border-zinc-800 rounded-[3rem]">
+                  <History size={48} className="mx-auto text-zinc-800 mb-4" />
+                  <p className="text-zinc-500 font-bold">
+                    Your escrow history will appear here
+                  </p>
+                </div>
+              )}
+            </section>
+          ) : (
+            /* CREATE VIEW */
+            <section className="bg-zinc-900 border border-zinc-800 rounded-[2.5rem] p-8 space-y-8 animate-in fade-in slide-in-from-top-4">
+              <div className="flex items-center gap-4">
+                <div className="p-4 bg-cyan-500/10 rounded-2xl">
+                  <PlusCircle className="text-emerald-500" size={32} />
+                </div>
+                <div>
+                  <h2 className="text-2xl font-black text-white tracking-tight">
+                    Deploy New Escrow
+                  </h2>
+                  <p className="text-zinc-500 text-sm">
+                    Secure your trade with automated on-chain enforcement.
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid gap-6">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-zinc-500 uppercase ml-2">
+                    Recipient Public Key
+                  </label>
+                  <input
+                    className="w-full bg-black border border-zinc-800 rounded-2xl p-4 text-sm font-mono outline-none focus:ring-1 focus:ring-cyan-500"
+                    placeholder="G..."
+                    value={createForm.recipient}
+                    onChange={(e) =>
+                      setCreateForm({
+                        ...createForm,
+                        recipient: e.target.value,
+                      })
+                    }
+                  />
+                </div>
+
+                <div className="grid md:grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-zinc-500 uppercase ml-2">
+                      Deposit (USDC)
+                    </label>
+                    <input
+                      type="number"
+                      className="w-full bg-black border border-zinc-800 rounded-2xl p-4 text-lg font-bold outline-none focus:ring-1 focus:ring-cyan-500"
+                      placeholder="100.00"
+                      value={createForm.amount}
+                      onChange={(e) =>
+                        setCreateForm({ ...createForm, amount: e.target.value })
+                      }
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-zinc-500 uppercase ml-2">
+                      Lock Period (Days)
+                    </label>
+                    <input
+                      type="number"
+                      className="w-full bg-black border border-zinc-800 rounded-2xl p-4 text-lg font-bold outline-none focus:ring-1 focus:ring-cyan-500"
+                      placeholder="7"
+                      value={createForm.deadlineDays}
+                      onChange={(e) =>
+                        setCreateForm({
+                          ...createForm,
+                          deadlineDays: e.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => handleAction("create")}
+                  disabled={loading || !connectedAddress}
+                  className="group relative w-full overflow-hidden rounded-2xl border border-emerald-500/30 bg-zinc-950 py-5 transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed hover:border-emerald-500/60 hover:bg-emerald-500/5"
+                >
+                  <div className="relative z-10 flex items-center justify-center gap-3">
+                    {loading ? (
+                      <RefreshCcw
+                        className="animate-spin text-emerald-500"
+                        size={20}
+                      />
+                    ) : (
+                      <Lock className="text-emerald-500" size={20} />
+                    )}
+                    <span className="text-lg font-black tracking-[0.15em] text-emerald-500 uppercase">
+                      {loading ? "Initializing..." : "Deploy & Deposit"}
+                    </span>
+                  </div>
+
+                  <div className="absolute inset-0 flex h-full w-full justify-center [transform:skew(-12deg)_translateX(-100%)] group-hover:duration-1000 group-hover:[transform:skew(-12deg)_translateX(100%)]">
+                    <div className="relative h-full w-12 bg-emerald-500/10" />
+                  </div>
+
+                  <div className="absolute bottom-0 left-0 h-[2px] w-full bg-gradient-to-r from-transparent via-emerald-500/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                </button>
+              </div>
+            </section>
+          )}
+
+          {txStatus && (
+            <div
+              className={`p-4 rounded-2xl flex items-center justify-between gap-4 border ${
+                txStatus.type === "success"
+                  ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+                  : txStatus.type === "error"
+                  ? "bg-rose-500/10 border-rose-500/20 text-rose-400"
+                  : "bg-cyan-500/10 border-cyan-500/20 text-cyan-400"
+              }`}
+            >
+              <div className="flex items-center gap-3 font-bold text-sm">
+                <AlertCircle size={18} />
+                {txStatus.msg}
+              </div>
+              {txStatus.hash && (
+                <a
+                  href={`https://stellar.expert/explorer/testnet/tx/${txStatus.hash}`}
+                  target="_blank"
+                  className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+                >
+                  <ExternalLink size={18} />
+                </a>
+              )}
+            </div>
+          )}
+        </main>
+
+        {!connectedAddress && (
+          <div className="fixed bottom-10 left-1/2 -translate-x-1/2 w-full max-w-xs px-4 z-[100]">
+            <button
+              onClick={() =>
+                walletsKit.openModal({
+                  onWalletSelected: async (option) => {
+                    const { address } = await walletsKit.getAddress();
+                    setAddress(address);
+                    return option;
+                  },
+                })
+              }
+              className="group relative w-full overflow-hidden rounded-2xl bg-zinc-950 p-[1.5px] transition-all hover:scale-105 active:scale-95 shadow-[0_0_40px_-10px_rgba(16,185,129,0.3)]"
+            >
+              <div className="absolute inset-[-1000%] animate-[spin_3s_linear_infinite] bg-[conic-gradient(from_90deg_at_50%_50%,#10b981_0%,#064e3b_50%,#10b981_100%)]" />
+
+              <div className="relative flex h-full w-full items-center justify-center gap-3 rounded-[15px] bg-zinc-950 px-8 py-4 transition-all group-hover:bg-zinc-900/50 backdrop-blur-xl">
+                <FaWallet className="text-emerald-500 text-lg flex-shrink-0" />
+
+                <span className="text-sm font-black tracking-widest text-emerald-500 uppercase leading-none">
+                  Connect Wallet
+                </span>
+
+                <div className="absolute inset-0 flex h-full w-full justify-center [transform:skew(-12deg)_translateX(-100%)] group-hover:duration-1000 group-hover:[transform:skew(-12deg)_translateX(100%)]">
+                  <div className="relative h-full w-8 bg-white/10" />
+                </div>
+              </div>
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

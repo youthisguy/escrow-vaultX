@@ -8,6 +8,8 @@ mod events;
 pub enum DataKey {
     Escrow(u64),
     NextId,
+    UserCreated(Address),   // Index for senders
+    UserReceived(Address),  // Index for recipients
 }
 
 #[derive(Clone)]
@@ -51,8 +53,8 @@ impl Escrow {
         let id = Self::next_id(&env);
     
         let data = EscrowData {
-            sender,
-            recipients,
+            sender: sender.clone(),
+            recipients: recipients.clone(),
             amount,
             token,
             created_at: env.ledger().timestamp(),
@@ -61,11 +63,38 @@ impl Escrow {
             status: 0,
         };
     
+        // Store main escrow data
         env.storage().instance().set(&DataKey::Escrow(id), &data);
+
+        // --- INDEXING LOGIC ---
+        
+        // 1. Index for the Sender
+        let sender_key = DataKey::UserCreated(sender);
+        let mut sender_list: Vec<u64> = env.storage().instance().get(&sender_key).unwrap_or(Vec::new(&env));
+        sender_list.push_back(id);
+        env.storage().instance().set(&sender_key, &sender_list);
+
+        // 2. Index for all Recipients
+        for (recipient, _) in recipients.iter() {
+            let recipient_key = DataKey::UserReceived(recipient);
+            let mut recipient_list: Vec<u64> = env.storage().instance().get(&recipient_key).unwrap_or(Vec::new(&env));
+            recipient_list.push_back(id);
+            env.storage().instance().set(&recipient_key, &recipient_list);
+        }
     
         events::created(&env, id, data.sender.clone(), amount, deadline);
     
         id
+    }
+
+    /// Retrieves all Escrow IDs created by a specific address
+    pub fn get_created_ids(env: Env, user: Address) -> Vec<u64> {
+        env.storage().instance().get(&DataKey::UserCreated(user)).unwrap_or(Vec::new(&env))
+    }
+
+    /// Retrieves all Escrow IDs where the user is a recipient
+    pub fn get_received_ids(env: Env, user: Address) -> Vec<u64> {
+        env.storage().instance().get(&DataKey::UserReceived(user)).unwrap_or(Vec::new(&env))
     }
 
     pub fn approve(env: Env, id: u64) {
