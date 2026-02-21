@@ -434,8 +434,8 @@ export default function EscrowPage() {
               )}
 
               {escrowDetail ? (
-                <div className="bg-zinc-900 border border-zinc-800 rounded-[2.5rem] overflow-hidden shadow-2xl shadow-black">
-                  <div className="p-8 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
+                <div className="bg-zinc-900 border border-zinc-800 md:rounded-[2.5rem] rounded-[2rem] overflow-hidden shadow-2xl shadow-black">
+                  <div className="p-5 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
                     <div>
                       <span className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-500">
                         Contract Asset
@@ -458,7 +458,7 @@ export default function EscrowPage() {
                     </div>
                   </div>
 
-                  <div className="p-8 grid md:grid-cols-2 gap-8">
+                  <div className="p-4 md:p-5 grid md:grid-cols-2 gap-8">
                     <div className="space-y-4">
                       <div className="flex items-start gap-3">
                         <div className="p-2 bg-zinc-800 rounded-lg">
@@ -528,7 +528,7 @@ export default function EscrowPage() {
                     </div>
                   </div>
 
-                  <div className="p-8 bg-zinc-950/50 flex flex-wrap gap-4">
+                  <div className="p-4 md:p-6 bg-zinc-950/50 flex flex-wrap gap-4">
                     {/* APPROVE */}
                     {escrowDetail.status === 0 &&
                       escrowDetail.sender === connectedAddress &&
@@ -578,7 +578,7 @@ export default function EscrowPage() {
             </section>
           ) : (
             /* CREATE VIEW */
-            <section className="bg-zinc-900 border border-zinc-800 rounded-[2.5rem] p-8 space-y-8 animate-in fade-in slide-in-from-top-4">
+            <section className="bg-zinc-900 border border-zinc-800 rounded-[1.2rem] md:rounded-4xl p-3 md:p-5 space-y-8 animate-in fade-in slide-in-from-top-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-4">
                   <div className="p-4 bg-emerald-500/10 rounded-2xl">

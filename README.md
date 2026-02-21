@@ -7,7 +7,7 @@
 | | |
 |---|---|
 | 🌐 **Live Demo** | [escrow-vault-x.vercel.app](https://escrow-vault-x.vercel.app/) |
-| 🎬 **Demo Video** | [YouTube — 1-min walkthrough](https://youtube.com) |
+| 🎬 **Demo Video** | [YouTube — 1-min walkthrough](https://youtu.be/cCwh-2OHqEE?si=vQmMQsP5C_nQ4X-I) |
 | 💻 **Repository** | [github.com/youthisguy/escrow-vaultX](https://github.com/youthisguy/escrow-vaultX) |
 
 ---
